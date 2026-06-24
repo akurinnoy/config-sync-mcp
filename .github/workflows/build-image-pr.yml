@@ -1,0 +1,95 @@
+name: Build image (PR validation)
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  QUAY_ORG: ${{ vars.QUAY_ORG || 'akurinnoy' }}
+  IMAGE: quay.io/${{ vars.QUAY_ORG || 'akurinnoy' }}/config-sync-mcp
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npm test
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install and build
+        run: npm ci && npm run build
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Quay.io
+        uses: docker/login-action@v4
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Post image tag as PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: image-tag
+          message: |
+            🐳 Image built and pushed:
+            ```
+            ${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}
+            ```
+
+      - name: Set tag expiration (14 days)
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+        run: |
+          EXPIRATION=$(date -u -d '+14 days' +%s)
+          curl -s -X PUT \
+            -H "Authorization: Bearer ${QUAY_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"expiration\": ${EXPIRATION}}" \
+            "https://quay.io/api/v1/repository/${QUAY_ORG}/config-sync-mcp/tag/pr-${PR_NUMBER}"
