@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: config-sync-mcp
+  labels:
+    app: config-sync-mcp
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: ["workspace.devfile.io"]
+    resources: ["devworkspaces"]
+    verbs: ["get", "list", "watch"]

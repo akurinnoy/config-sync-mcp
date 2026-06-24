@@ -1,0 +1,13 @@
+tool: gemini-cli
+name: Gemini CLI
+paths:
+  sync:
+    - "~/.gemini/settings.json"
+    - "~/.gemini/GEMINI.md"
+  skip:
+    - "~/.gemini/cache/**"
+    - "~/.gemini/history/**"
+  sensitive:
+    - "**/*credentials*"
+    - "**/*token*"
+    - "**/*.key"

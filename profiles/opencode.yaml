@@ -1,0 +1,10 @@
+tool: opencode
+name: opencode
+paths:
+  sync:
+    - "~/.config/opencode/config.json"
+  skip: []
+  sensitive:
+    - "**/*credentials*"
+    - "**/*token*"
+    - "**/*.key"

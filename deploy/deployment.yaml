@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: config-sync-mcp
+  labels:
+    app: config-sync-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: config-sync-mcp
+  template:
+    metadata:
+      labels:
+        app: config-sync-mcp
+    spec:
+      serviceAccountName: config-sync-mcp
+      containers:
+        - name: config-sync-mcp
+          image: quay.io/akurinnoy/config-sync-mcp:next
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8089
+              name: mcp
+          env:
+            - name: CONFIG_SYNC_PORT
+              value: "8089"
+            - name: FILE_ACCESS_MODE
+              value: "remote"
+            - name: CONFIG_SYNC_USER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WORKSPACE_HOME_DIR
+              value: "/home/user"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8089
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8089
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"

@@ -1,0 +1,17 @@
+tool: claude-code
+name: Claude Code
+paths:
+  sync:
+    - "~/.claude/settings.json"
+    - "~/.claude/settings.local.json"
+    - "~/.claude/CLAUDE.md"
+    - "~/.claude/agents/**"
+    - "~/.claude/hooks/**"
+    - "~/.claude/plugins/**"
+    - "~/.claude.json"
+  skip:
+    - "~/.claude/plugins/cache/**"
+  sensitive:
+    - "**/*credentials*"
+    - "**/*token*"
+    - "**/*.key"
