@@ -15,8 +15,6 @@ spec:
         app: config-sync-mcp
     spec:
       serviceAccountName: config-sync-mcp
-      securityContext:
-        fsGroup: 0
       containers:
         - name: config-sync-mcp
           image: quay.io/akurinnoy/config-sync-mcp:next
