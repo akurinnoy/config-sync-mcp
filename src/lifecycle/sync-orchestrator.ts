@@ -13,6 +13,8 @@ interface OrchestratorConfig {
   debounceWindowMs?: number;
   periodicPushIntervalMs?: number;
   initialPushDelayMs?: number;
+  initialPullDelayMs?: number;
+  pullRetryCount?: number;
 }
 
 const DEFAULT_DEBOUNCE_MS = 3000;
@@ -35,11 +37,15 @@ export class SyncOrchestrator {
   private readonly periodicTimers = new Map<string, { initial: ReturnType<typeof setTimeout> | null; interval: ReturnType<typeof setInterval> | null }>();
   private readonly periodicPushIntervalMs: number;
   private readonly initialPushDelayMs: number;
+  private readonly initialPullDelayMs: number;
+  private readonly pullRetryCount: number;
 
   constructor(private readonly config: OrchestratorConfig) {
     this.debounceWindowMs = config.debounceWindowMs ?? DEFAULT_DEBOUNCE_MS;
     this.periodicPushIntervalMs = config.periodicPushIntervalMs ?? 300_000;
     this.initialPushDelayMs = config.initialPushDelayMs ?? 30_000;
+    this.initialPullDelayMs = config.initialPullDelayMs ?? 30_000;
+    this.pullRetryCount = config.pullRetryCount ?? 2;
   }
 
   handleTransition(event: TransitionEvent): void {
@@ -68,14 +74,14 @@ export class SyncOrchestrator {
       return;
     }
 
-    // Debounce pull events only — push must be immediate (pod terminates fast)
+    // Debounce pull events — use initialPullDelayMs for container readiness
     const existing = this.debounceTimers.get(key);
     if (existing) clearTimeout(existing);
 
     const timer = setTimeout(() => {
       this.debounceTimers.delete(key);
-      this.executeSync(event.workspace, direction);
-    }, this.debounceWindowMs);
+      this.executePullWithRetry(event.workspace);
+    }, this.initialPullDelayMs);
 
     this.debounceTimers.set(key, timer);
 
@@ -211,6 +217,65 @@ export class SyncOrchestrator {
       this.periodicTimers.delete(workspace);
       console.log(`[lifecycle-sync] periodic-timer-cancelled workspace=${workspace}`);
     }
+  }
+
+  private executePullWithRetry(workspace: string, attempt = 0): void {
+    if (this.stopped) return;
+    if (!this.runningWorkspaces.has(workspace)) return;
+
+    const key = `${workspace}:pull`;
+
+    if (this.isCircuitOpen(key)) {
+      console.log(`[lifecycle-sync] periodic-push-skipped workspace=${workspace} reason=circuit-breaker-open`);
+      return;
+    }
+
+    if (this.inFlight.has(key)) {
+      console.log(`[lifecycle-sync] periodic-push-skipped workspace=${workspace} reason=in-flight`);
+      return;
+    }
+
+    this.inFlight.add(key);
+    console.log(`[lifecycle-sync] sync-started workspace=${workspace} action=pull`);
+    const startTime = Date.now();
+
+    const promise = this.doSync(workspace, 'pull')
+      .then(() => {
+        const duration = Date.now() - startTime;
+        console.log(`[lifecycle-sync] sync-completed workspace=${workspace} action=pull duration=${duration}ms`);
+        this.failureCounts.delete(key);
+        if (attempt > 0) {
+          console.log(`[lifecycle-sync] pull-retry-success workspace=${workspace} attempt=${attempt}/${this.pullRetryCount}`);
+        }
+      })
+      .catch((err) => {
+        const duration = Date.now() - startTime;
+        console.error(`[lifecycle-sync] sync-failed workspace=${workspace} action=pull duration=${duration}ms error=${(err as Error).message}`);
+        const count = (this.failureCounts.get(key) ?? 0) + 1;
+        this.failureCounts.set(key, count);
+
+        // Schedule retry if attempts remain
+        if (attempt < this.pullRetryCount) {
+          const nextAttempt = attempt + 1;
+          const delay = 30_000 * nextAttempt; // 30s, 60s
+          console.log(`[lifecycle-sync] pull-retry workspace=${workspace} attempt=${nextAttempt}/${this.pullRetryCount} delay=${delay}ms reason=${(err as Error).message}`);
+
+          const retryTimer = setTimeout(() => {
+            this.executePullWithRetry(workspace, nextAttempt);
+          }, delay);
+
+          // Store retry timer so shutdown can cancel it
+          this.debounceTimers.set(`${workspace}:pull-retry`, retryTimer);
+        } else {
+          console.log(`[lifecycle-sync] pull-exhausted workspace=${workspace} attempts=${attempt + 1}`);
+        }
+      })
+      .finally(() => {
+        this.inFlight.delete(key);
+        this.inflightPromises.delete(promise);
+      });
+
+    this.inflightPromises.add(promise);
   }
 
   private isCircuitOpen(key: string): boolean {
