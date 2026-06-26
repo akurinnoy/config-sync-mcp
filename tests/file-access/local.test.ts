@@ -11,7 +11,22 @@ beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
   fa = new LocalFileAccess();
 });
-afterEach(() => rmSync(TMP, { recursive: true, force: true }));
+afterEach(() => {
+  // Restore permissions on any restricted directories before cleanup
+  const fs = require('node:fs');
+  const restrictedDirs = [
+    join(TMP, 'restricted'),
+    join(TMP, 'restricted-stat'),
+    join(TMP, 'restricted-lstat'),
+    join(TMP, 'restricted-realpath'),
+  ];
+  for (const dir of restrictedDirs) {
+    try {
+      fs.chmodSync(dir, 0o755);
+    } catch {}
+  }
+  rmSync(TMP, { recursive: true, force: true });
+});
 
 describe('LocalFileAccess', () => {
   it('reads and writes files', async () => {
@@ -74,5 +89,75 @@ describe('LocalFileAccess', () => {
   it('throws FileAccessError for missing file', async () => {
     await expect(fa.readFile(join(TMP, 'nope'))).rejects.toThrow(FileAccessError);
     await expect(fa.readFile(join(TMP, 'nope'))).rejects.toHaveProperty('code', 'ENOENT');
+  });
+
+  it('throws FileAccessError for permission denied on readFile', async () => {
+    const path = join(TMP, 'readonly.txt');
+    writeFileSync(path, 'secret', { mode: 0o000 });
+    await expect(fa.readFile(path)).rejects.toThrow(FileAccessError);
+    await expect(fa.readFile(path)).rejects.toHaveProperty('code', 'EACCES');
+  });
+
+  it('throws FileAccessError for permission denied on writeFile', async () => {
+    const path = join(TMP, 'readonly.txt');
+    writeFileSync(path, 'content', { mode: 0o444 });
+    await expect(fa.writeFile(path, Buffer.from('new'))).rejects.toThrow(FileAccessError);
+    await expect(fa.writeFile(path, Buffer.from('new'))).rejects.toHaveProperty('code', 'EACCES');
+  });
+
+  it('throws FileAccessError for permission denied on stat', async () => {
+    const dir = join(TMP, 'restricted-stat');
+    const file = join(dir, 'file.txt');
+    mkdirSync(dir);
+    writeFileSync(file, 'content');
+    // Remove read/execute permissions on the directory
+    const fs = await import('node:fs');
+    fs.chmodSync(dir, 0o000);
+    try {
+      await expect(fa.stat(file)).rejects.toThrow(FileAccessError);
+      await expect(fa.stat(file)).rejects.toHaveProperty('code', 'EACCES');
+    } finally {
+      // Restore permissions so cleanup can succeed
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+
+  it('throws FileAccessError for permission denied on lstat', async () => {
+    const dir = join(TMP, 'restricted-lstat');
+    const file = join(dir, 'file.txt');
+    mkdirSync(dir);
+    writeFileSync(file, 'content');
+    const fs = await import('node:fs');
+    fs.chmodSync(dir, 0o000);
+    try {
+      await expect(fa.lstat(file)).rejects.toThrow(FileAccessError);
+      await expect(fa.lstat(file)).rejects.toHaveProperty('code', 'EACCES');
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+
+  it('throws FileAccessError for permission denied on realpath', async () => {
+    const dir = join(TMP, 'restricted-realpath');
+    const file = join(dir, 'file.txt');
+    mkdirSync(dir);
+    writeFileSync(file, 'content');
+    const fs = await import('node:fs');
+    fs.chmodSync(dir, 0o000);
+    try {
+      await expect(fa.realpath(file)).rejects.toThrow(FileAccessError);
+      await expect(fa.realpath(file)).rejects.toHaveProperty('code', 'EACCES');
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+
+  it('throws original error for unknown error code (EISDIR)', async () => {
+    const dir = join(TMP, 'directory');
+    mkdirSync(dir);
+    // Trying to read a directory as a file should trigger EISDIR error
+    await expect(fa.readFile(dir)).rejects.toThrow();
+    // Verify it's not a FileAccessError (since EISDIR is not mapped)
+    await expect(fa.readFile(dir)).rejects.not.toBeInstanceOf(FileAccessError);
   });
 });

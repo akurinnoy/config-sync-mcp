@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FileBackend } from '../../src/storage/file-backend.js';
 import type { ConfigBundle } from '../../src/types.js';
@@ -104,5 +104,29 @@ describe('FileBackend', () => {
   it('rejects path traversal in version string', async () => {
     await expect(backend.retrieve('git', '../../etc')).rejects.toThrow('Invalid version');
     await expect(backend.deleteVersion('git', '../../../tmp')).rejects.toThrow('Invalid version');
+  });
+
+  it('skips malformed version directories when listing', async () => {
+    await backend.store(makeBundle('git', 'v1'));
+
+    // Create a malformed version directory with invalid manifest.json
+    const toolDir = join(TMP, USER_ID, 'git');
+    const badVersionDir = join(toolDir, '20250101_120000_abc');
+    mkdirSync(badVersionDir, { recursive: true });
+    writeFileSync(join(badVersionDir, 'manifest.json'), '{ invalid json }');
+
+    const versions = await backend.listVersions('git');
+    expect(versions).toHaveLength(1);
+  });
+
+  it('throws when retrieving from tool with no versions', async () => {
+    await expect(backend.retrieve('git')).rejects.toThrow();
+  });
+
+  it('healthCheck returns unhealthy when storage is inaccessible', async () => {
+    const inaccessibleBackend = new FileBackend('/nonexistent/path/that/does/not/exist', 'user');
+    const health = await inaccessibleBackend.healthCheck();
+    expect(health.healthy).toBe(false);
+    expect(health.message).toContain('not accessible');
   });
 });

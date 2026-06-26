@@ -189,4 +189,23 @@ describe('SyncEngine', () => {
     expect(result.warnings).toHaveLength(0);
     expect(mockStorage.store).toHaveBeenCalled();
   });
+
+  it('throws when getSyncStatus called with unknown tool', () => {
+    expect(() => engine.getSyncStatus('unknown')).toThrow('Unknown tool');
+    expect(() => engine.getSyncStatus('unknown')).toThrow('Available: git');
+  });
+
+  it('returns all profiles with getProfiles', () => {
+    const profiles = engine.getProfiles();
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].tool).toBe('git');
+    expect(profiles[0].name).toBe('Git');
+  });
+
+  it('returns status for all tools when tool parameter omitted', () => {
+    const status = engine.getSyncStatus();
+    expect(status).toHaveLength(1);
+    expect(status[0].tool).toBe('git');
+    expect(status[0].status).toBe('never_synced');
+  });
 });

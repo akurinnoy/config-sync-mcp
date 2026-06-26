@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { resolveFiles } from '../../src/profiles/resolver.js';
 import { LocalFileAccess } from '../../src/file-access/local.js';
 import type { ToolProfile } from '../../src/types.js';
+import type { FileAccess, Stat } from '../../src/file-access/interface.js';
 
 const TMP_HOME = join(import.meta.dirname, '..', '.tmp-home');
 
@@ -69,5 +70,66 @@ describe('resolveFiles', () => {
       new LocalFileAccess(),
     );
     expect(files).toEqual([]);
+  });
+
+  it('rejects symlinks pointing outside home (mock FileAccess)', async () => {
+    const mockFileAccess: FileAccess = {
+      async glob() {
+        return ['.config/tool/external-link'];
+      },
+      async lstat(path: string): Promise<Stat> {
+        if (path === join(TMP_HOME, '.config/tool/external-link')) {
+          return { isFile: false, isDirectory: false, isSymbolicLink: true, size: 0, mtimeMs: Date.now() };
+        }
+        throw new Error('unexpected lstat path');
+      },
+      async realpath(path: string): Promise<string> {
+        if (path === join(TMP_HOME, '.config/tool/external-link')) {
+          return '/etc/shadow';
+        }
+        throw new Error('unexpected realpath path');
+      },
+      async readFile() { throw new Error('not used'); },
+      async writeFile() { throw new Error('not used'); },
+      async stat() { throw new Error('not used'); },
+      async mkdir() { throw new Error('not used'); },
+    };
+
+    const files = await resolveFiles(makeProfile(), TMP_HOME, mockFileAccess);
+    expect(files).toHaveLength(0);
+  });
+
+  it('includes symlinks that resolve inside home directory', async () => {
+    const mockFileAccess: FileAccess = {
+      async glob() {
+        return ['.config/tool/link'];
+      },
+      async lstat(path: string): Promise<Stat> {
+        if (path === join(TMP_HOME, '.config/tool/link')) {
+          return {
+            isFile: false,
+            isDirectory: false,
+            isSymbolicLink: true,
+            size: 0,
+            mtimeMs: Date.now(),
+          };
+        }
+        throw new Error('unexpected lstat path');
+      },
+      async realpath(path: string): Promise<string> {
+        if (path === join(TMP_HOME, '.config/tool/link')) {
+          return join(TMP_HOME, '.config', 'tool', 'target');
+        }
+        throw new Error('unexpected realpath path');
+      },
+      async readFile() { throw new Error('not used'); },
+      async writeFile() { throw new Error('not used'); },
+      async stat() { throw new Error('not used'); },
+      async mkdir() { throw new Error('not used'); },
+    };
+
+    const files = await resolveFiles(makeProfile(), TMP_HOME, mockFileAccess);
+    expect(files).toHaveLength(1);
+    expect(files[0].relativePath).toBe('.config/tool/link');
   });
 });

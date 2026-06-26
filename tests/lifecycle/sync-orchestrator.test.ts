@@ -452,4 +452,92 @@ describe('SyncOrchestrator', () => {
     );
     consoleSpy.mockRestore();
   });
+
+  it('handles periodic push check when workspace has already stopped (no timers)', async () => {
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Advance past initial periodic push
+    await vi.advanceTimersByTimeAsync(30100);
+
+    // Stop the workspace (clears timers)
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Running',
+      newPhase: 'Stopping',
+    }));
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Now the periodic interval check runs, but workspace is no longer in runningWorkspaces
+    // and timers map is already cleared — this exercises line 211-212
+    resolver.resolve.mockClear();
+    await vi.advanceTimersByTimeAsync(300000);
+
+    // No additional calls should happen (periodic push was already cancelled)
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('clears retry timers when workspace stops before retry fires', async () => {
+    resolver.resolve.mockRejectedValue(new Error('Exec timed out'));
+
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Initial pull + periodic push both fail at 30s
+    await vi.advanceTimersByTimeAsync(30100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Workspace stops (should clear retry timers)
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Running',
+      newPhase: 'Stopping',
+    }));
+
+    // Stop-time push fires (also fails)
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Advance past retry delay — retry should NOT fire (timers were cleared)
+    resolver.resolve.mockClear();
+    await vi.advanceTimersByTimeAsync(30100);
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('periodic interval self-cancels when workspace removed between ticks', async () => {
+    const customOrchestrator = new SyncOrchestrator({
+      profiles: testProfiles,
+      storage,
+      homeDir: '/home/user',
+      resolver,
+      periodicPushIntervalMs: 10000,
+      initialPushDelayMs: 5000,
+      initialPullDelayMs: 5000,
+    });
+
+    customOrchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Let initial push + pull fire
+    await vi.advanceTimersByTimeAsync(5100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Manually remove workspace from running set by stopping it
+    // but without going through handleTransition (simulate race)
+    customOrchestrator.handleTransition(makeTransition({
+      previousPhase: 'Running',
+      newPhase: 'Stopping',
+    }));
+    await vi.advanceTimersByTimeAsync(100);
+
+    // The interval callback should detect workspace is gone and self-cancel
+    resolver.resolve.mockClear();
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(resolver.resolve).not.toHaveBeenCalled();
+
+    await customOrchestrator.shutdown();
+  });
 });

@@ -129,4 +129,68 @@ describe('KubeFileAccess', () => {
     const result = await fa.readFile('/home/user/binary.dat');
     expect(Buffer.compare(result, binary)).toBe(0);
   });
+
+  it('throws EACCES error for Permission denied', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Permission denied: /restricted/file', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.readFile('/restricted/file')).rejects.toThrow('EACCES');
+    await expect(fa.readFile('/restricted/file')).rejects.toHaveProperty('code', 'EACCES');
+  });
+
+  it('throws EXEC_FAILED error for unknown exec errors', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Unknown error occurred', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.readFile('/some/file')).rejects.toThrow('EXEC_FAILED');
+    await expect(fa.readFile('/some/file')).rejects.toHaveProperty('code', 'EXEC_FAILED');
+  });
+
+  it('globs with ignore patterns', async () => {
+    const exec = vi.fn().mockResolvedValue(ok('.gitconfig\n'));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    const files = await fa.glob(['.git*'], { cwd: '/home/user', ignore: ['*.log'] });
+    expect(files).toEqual(['.gitconfig']);
+    expect(exec).toHaveBeenCalledWith(
+      POD, CONTAINER,
+      expect.arrayContaining([expect.stringContaining('grep -v')]),
+      undefined,
+    );
+  });
+
+  it('throws EACCES error on writeFile permission denied', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Permission denied', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.writeFile('/restricted/file', Buffer.from('data'))).rejects.toThrow('EACCES');
+  });
+
+  it('throws EACCES error on stat permission denied', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Permission denied', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.stat('/restricted/file')).rejects.toThrow('EACCES');
+  });
+
+  it('throws EACCES error on lstat permission denied', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Permission denied', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.lstat('/restricted/file')).rejects.toThrow('EACCES');
+  });
+
+  it('throws EACCES error on realpath permission denied', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Permission denied', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.realpath('/restricted/file')).rejects.toThrow('EACCES');
+  });
+
+  it('throws error on glob exec failure', async () => {
+    const exec = vi.fn().mockResolvedValue(fail('Permission denied', 1));
+    const fa = new KubeFileAccess(mockClient(exec), POD, CONTAINER);
+
+    await expect(fa.glob(['*.txt'], { cwd: '/home/user' })).rejects.toThrow('EACCES');
+  });
 });
