@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { SyncEngine } from '../../src/sync/engine.js';
@@ -119,5 +119,74 @@ describe('SyncEngine', () => {
     const result = await engine.pushConfig('git');
     expect(result.filesStored).toBe(0);
     expect(result.warnings.some((w) => w.includes('exceeds'))).toBe(true);
+  });
+
+  it('refuses to overwrite non-empty stored config with empty push', async () => {
+    const mockStorage = {
+      initialize: vi.fn(),
+      store: vi.fn().mockResolvedValue({ version: 'v2' }),
+      retrieve: vi.fn(),
+      listVersions: vi.fn().mockResolvedValue([
+        { version: 'v1', timestamp: new Date().toISOString(), fileCount: 3, totalBytes: 1024, checksum: 'abc' },
+      ]),
+      deleteVersion: vi.fn(),
+      healthCheck: vi.fn(),
+    };
+    const mockFileAccess = {
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      stat: vi.fn(),
+      lstat: vi.fn(),
+      mkdir: vi.fn(),
+      glob: vi.fn().mockResolvedValue([]),
+      realpath: vi.fn(),
+    };
+
+    const engine = new SyncEngine(
+      [{ tool: 'claude-code', name: 'Claude Code', paths: { sync: ['~/.claude/settings.json'], skip: [], sensitive: [] } }],
+      mockStorage,
+      '/home/user',
+      mockFileAccess,
+    );
+
+    const result = await engine.pushConfig('claude-code', 'auto-sync');
+
+    expect(result.filesStored).toBe(0);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings[0]).toContain('empty manifest');
+    expect(mockStorage.store).not.toHaveBeenCalled();
+  });
+
+  it('allows empty push when no previous version exists', async () => {
+    const mockStorage = {
+      initialize: vi.fn(),
+      store: vi.fn().mockResolvedValue({ version: 'v1' }),
+      retrieve: vi.fn(),
+      listVersions: vi.fn().mockResolvedValue([]),
+      deleteVersion: vi.fn(),
+      healthCheck: vi.fn(),
+    };
+    const mockFileAccess = {
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      stat: vi.fn(),
+      lstat: vi.fn(),
+      mkdir: vi.fn(),
+      glob: vi.fn().mockResolvedValue([]),
+      realpath: vi.fn(),
+    };
+
+    const engine = new SyncEngine(
+      [{ tool: 'claude-code', name: 'Claude Code', paths: { sync: ['~/.claude/settings.json'], skip: [], sensitive: [] } }],
+      mockStorage,
+      '/home/user',
+      mockFileAccess,
+    );
+
+    const result = await engine.pushConfig('claude-code', 'initial');
+
+    expect(result.filesStored).toBe(0);
+    expect(result.warnings).toHaveLength(0);
+    expect(mockStorage.store).toHaveBeenCalled();
   });
 });

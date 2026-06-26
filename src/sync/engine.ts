@@ -79,6 +79,23 @@ export class SyncEngine {
       files.set(file.relativePath, content);
     }
 
+    // Empty-manifest guard: refuse to overwrite non-empty stored configs with empty push
+    if (manifest.length === 0) {
+      const existing = await this.storage.listVersions(tool, 1);
+      if (existing.length > 0 && existing[0].fileCount > 0) {
+        console.log(`[sync-engine] periodic-push-empty-blocked tool=${tool} existingVersion=${existing[0].version} fileCount=${existing[0].fileCount}`);
+        warnings.push(`Blocked: empty manifest would overwrite ${existing[0].fileCount} stored files (version ${existing[0].version})`);
+        return {
+          tool,
+          version: existing[0].version,
+          filesStored: 0,
+          bytesStored: 0,
+          checksum: '',
+          warnings,
+        };
+      }
+    }
+
     const bundle: ConfigBundle = {
       tool,
       version: '',
