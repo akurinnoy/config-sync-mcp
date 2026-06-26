@@ -197,4 +197,111 @@ describe('SyncOrchestrator', () => {
 
     expect(resolver.resolve).not.toHaveBeenCalled();
   });
+
+  it('starts periodic push 30s after workspace reaches Running', async () => {
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // At 3.1s: debounced pull fires
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(resolver.resolve).toHaveBeenCalledTimes(1);
+
+    // At 30s: initial periodic push fires
+    resolver.resolve.mockClear();
+    await vi.advanceTimersByTimeAsync(27000);
+    expect(resolver.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('repeats periodic push at configured interval', async () => {
+    const customOrchestrator = new SyncOrchestrator({
+      profiles: testProfiles,
+      storage,
+      homeDir: '/home/user',
+      resolver,
+      debounceWindowMs: 3000,
+      periodicPushIntervalMs: 60000,
+      initialPushDelayMs: 10000,
+    });
+
+    customOrchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Advance past initial delay (10s) + pull debounce (3s)
+    await vi.advanceTimersByTimeAsync(10100);
+    const callsAfterInitial = resolver.resolve.mock.calls.length;
+    expect(callsAfterInitial).toBeGreaterThanOrEqual(2); // pull + initial push
+
+    // Advance one full interval (60s) — should get another push
+    resolver.resolve.mockClear();
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(resolver.resolve).toHaveBeenCalled();
+
+    await customOrchestrator.shutdown();
+  });
+
+  it('cancels periodic push timer when workspace stops', async () => {
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Advance past initial delay to confirm timer is active
+    await vi.advanceTimersByTimeAsync(31000);
+    const callsBeforeStop = resolver.resolve.mock.calls.length;
+    expect(callsBeforeStop).toBeGreaterThanOrEqual(2); // pull + initial push
+
+    // Stop the workspace
+    resolver.resolve.mockClear();
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Running',
+      newPhase: 'Stopping',
+    }));
+
+    // The stop-time push fires immediately
+    await vi.advanceTimersByTimeAsync(100);
+    const stopPushCalls = resolver.resolve.mock.calls.length;
+
+    // Advance past where the next periodic push would fire — should NOT trigger
+    resolver.resolve.mockClear();
+    await vi.advanceTimersByTimeAsync(300000);
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('stop-time push bypasses circuit breaker', async () => {
+    resolver.resolve.mockRejectedValue(new Error('pod not found'));
+
+    // Trip the breaker with 3 failures via periodic pushes
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Advance past initial delay + settle for periodic pushes to fail
+    await vi.advanceTimersByTimeAsync(31000);
+    await vi.advanceTimersByTimeAsync(100);
+    // Two more periodic intervals to trip the breaker (3 total failures)
+    await vi.advanceTimersByTimeAsync(300000);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(300000);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Now stop — the stop-time push should still fire despite breaker
+    resolver.resolve.mockClear();
+    resolver.resolve.mockResolvedValue({
+      readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn(), lstat: vi.fn(),
+      mkdir: vi.fn(), glob: vi.fn().mockResolvedValue([]), realpath: vi.fn(),
+    });
+
+    orchestrator.handleTransition(makeTransition({
+      previousPhase: 'Running',
+      newPhase: 'Stopping',
+    }));
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(resolver.resolve).toHaveBeenCalled();
+  });
 });

@@ -11,6 +11,8 @@ interface OrchestratorConfig {
   homeDir: string;
   resolver: WorkspaceResolver;
   debounceWindowMs?: number;
+  periodicPushIntervalMs?: number;
+  initialPushDelayMs?: number;
 }
 
 const DEFAULT_DEBOUNCE_MS = 3000;
@@ -29,26 +31,40 @@ export class SyncOrchestrator {
   private readonly inflightPromises = new Set<Promise<void>>();
   private readonly debounceWindowMs: number;
   private stopped = false;
+  private readonly runningWorkspaces = new Set<string>();
+  private readonly periodicTimers = new Map<string, { initial: ReturnType<typeof setTimeout> | null; interval: ReturnType<typeof setInterval> | null }>();
+  private readonly periodicPushIntervalMs: number;
+  private readonly initialPushDelayMs: number;
 
   constructor(private readonly config: OrchestratorConfig) {
     this.debounceWindowMs = config.debounceWindowMs ?? DEFAULT_DEBOUNCE_MS;
+    this.periodicPushIntervalMs = config.periodicPushIntervalMs ?? 300_000;
+    this.initialPushDelayMs = config.initialPushDelayMs ?? 30_000;
   }
 
   handleTransition(event: TransitionEvent): void {
     if (this.stopped) return;
 
     const direction = TRANSITION_TO_DIRECTION[`${event.previousPhase}:${event.newPhase}`];
-    if (!direction) return;
-
-    const key = `${event.workspace}:${direction}`;
-
-    if (this.isCircuitOpen(key)) {
-      console.log(`[lifecycle-sync] circuit-breaker-open workspace=${event.workspace} direction=${direction}`);
+    if (!direction) {
+      // Periodic push timer management (even when no sync direction)
+      if (event.previousPhase === 'Starting' && event.newPhase === 'Running') {
+        this.startPeriodicPush(event.workspace);
+      } else if (this.runningWorkspaces.has(event.workspace) && event.newPhase !== 'Running') {
+        this.cancelPeriodicPush(event.workspace);
+      }
       return;
     }
 
+    const key = `${event.workspace}:${direction}`;
+
     if (direction === 'push') {
-      this.executeSync(event.workspace, direction);
+      // Stop-time push bypasses circuit breaker (last-chance fallback)
+      this.executeSync(event.workspace, direction, true);
+      // Cancel periodic timer if workspace is stopping
+      if (this.runningWorkspaces.has(event.workspace)) {
+        this.cancelPeriodicPush(event.workspace);
+      }
       return;
     }
 
@@ -62,10 +78,21 @@ export class SyncOrchestrator {
     }, this.debounceWindowMs);
 
     this.debounceTimers.set(key, timer);
+
+    // Start periodic timer when workspace reaches Running
+    if (event.previousPhase === 'Starting' && event.newPhase === 'Running') {
+      this.startPeriodicPush(event.workspace);
+    }
   }
 
   async shutdown(): Promise<void> {
     this.stopped = true;
+
+    // Cancel all periodic timers
+    for (const workspace of this.runningWorkspaces) {
+      this.cancelPeriodicPush(workspace);
+    }
+    this.runningWorkspaces.clear();
 
     // Cancel all pending debounce timers
     for (const timer of this.debounceTimers.values()) {
@@ -82,11 +109,19 @@ export class SyncOrchestrator {
     }
   }
 
-  private executeSync(workspace: string, direction: SyncDirection): void {
+  private executeSync(workspace: string, direction: SyncDirection, bypassBreaker = false): void {
     const key = `${workspace}:${direction}`;
 
+    if (!bypassBreaker && this.isCircuitOpen(key)) {
+      console.log(`[lifecycle-sync] periodic-push-skipped workspace=${workspace} reason=circuit-breaker-open`);
+      return;
+    }
+
     // Concurrency: skip if already in-flight for this key
-    if (this.inFlight.has(key)) return;
+    if (this.inFlight.has(key)) {
+      console.log(`[lifecycle-sync] periodic-push-skipped workspace=${workspace} reason=in-flight`);
+      return;
+    }
 
     this.inFlight.add(key);
     const action = direction === 'pull' ? 'pull' : 'push';
@@ -132,6 +167,49 @@ export class SyncOrchestrator {
       } catch (err) {
         console.error(`[lifecycle-sync] sync-failed workspace=${workspace} tool=${profile.tool} action=${direction} error=${(err as Error).message}`);
       }
+    }
+  }
+
+  private startPeriodicPush(workspace: string): void {
+    // Cancel any existing timer (idempotent for cold-start reconciliation)
+    const timers = this.periodicTimers.get(workspace);
+    if (timers) {
+      if (timers.initial) clearTimeout(timers.initial);
+      if (timers.interval) clearInterval(timers.interval);
+      this.periodicTimers.delete(workspace);
+    }
+
+    this.runningWorkspaces.add(workspace);
+
+    const jitter = 1 + (Math.random() * 0.3 - 0.15); // +/-15%
+    const interval = Math.round(this.periodicPushIntervalMs * jitter);
+
+    console.log(`[lifecycle-sync] periodic-push-scheduled workspace=${workspace} initialDelayMs=${this.initialPushDelayMs} intervalMs=${interval}`);
+
+    const initial = setTimeout(() => {
+      if (!this.runningWorkspaces.has(workspace)) return;
+      this.executeSync(workspace, 'push');
+    }, this.initialPushDelayMs);
+
+    const periodic = setInterval(() => {
+      if (!this.runningWorkspaces.has(workspace)) {
+        this.cancelPeriodicPush(workspace);
+        return;
+      }
+      this.executeSync(workspace, 'push');
+    }, interval);
+
+    this.periodicTimers.set(workspace, { initial, interval: periodic });
+  }
+
+  private cancelPeriodicPush(workspace: string): void {
+    this.runningWorkspaces.delete(workspace);
+    const timers = this.periodicTimers.get(workspace);
+    if (timers) {
+      if (timers.initial) clearTimeout(timers.initial);
+      if (timers.interval) clearInterval(timers.interval);
+      this.periodicTimers.delete(workspace);
+      console.log(`[lifecycle-sync] periodic-timer-cancelled workspace=${workspace}`);
     }
   }
 
