@@ -163,6 +163,9 @@ export class SyncOrchestrator {
       fileAccess,
     );
 
+    let failCount = 0;
+    let lastError: Error | undefined;
+
     for (const profile of this.config.profiles) {
       try {
         if (direction === 'pull') {
@@ -171,8 +174,14 @@ export class SyncOrchestrator {
           await engine.pushConfig(profile.tool, `auto-sync on workspace ${direction}`);
         }
       } catch (err) {
+        failCount++;
+        lastError = err as Error;
         console.error(`[lifecycle-sync] sync-failed workspace=${workspace} tool=${profile.tool} action=${direction} error=${(err as Error).message}`);
       }
+    }
+
+    if (failCount === this.config.profiles.length && lastError) {
+      throw new Error(`All ${failCount} tool(s) failed for ${direction}: ${lastError.message}`);
     }
   }
 

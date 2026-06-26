@@ -391,6 +391,41 @@ describe('SyncOrchestrator', () => {
     expect(resolver.resolve).not.toHaveBeenCalled();
   });
 
+  it('retries pull when per-tool errors occur (doSync does not swallow all failures)', async () => {
+    const failingStorage = createMockStorage();
+    (failingStorage.retrieve as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('No versions found for tool "claude-code"'),
+    );
+
+    const retryOrchestrator = new SyncOrchestrator({
+      profiles: testProfiles,
+      storage: failingStorage,
+      homeDir: '/home/user',
+      resolver,
+      initialPullDelayMs: 30000,
+      pullRetryCount: 1,
+    });
+
+    const consoleSpy = vi.spyOn(console, 'log');
+
+    retryOrchestrator.handleTransition(makeTransition({
+      previousPhase: 'Starting',
+      newPhase: 'Running',
+    }));
+
+    // Initial pull at 30s — all tools fail (retrieve rejects)
+    await vi.advanceTimersByTimeAsync(30100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Should schedule a retry since doSync should propagate failure
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('pull-retry'),
+    );
+
+    consoleSpy.mockRestore();
+    await retryOrchestrator.shutdown();
+  });
+
   it('logs pull-exhausted when all retries fail', async () => {
     const consoleSpy = vi.spyOn(console, 'log');
     resolver.resolve.mockRejectedValue(new Error('Exec timed out'));
