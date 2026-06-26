@@ -15,6 +15,8 @@ spec:
         app: config-sync-mcp
     spec:
       serviceAccountName: config-sync-mcp
+      securityContext:
+        fsGroup: 0
       containers:
         - name: config-sync-mcp
           image: quay.io/akurinnoy/config-sync-mcp:next
@@ -27,6 +29,8 @@ spec:
               value: "8089"
             - name: FILE_ACCESS_MODE
               value: "remote"
+            - name: CONFIG_SYNC_STORAGE_DIR
+              value: "/data/config-sync-storage"
             - name: CONFIG_SYNC_USER_ID
               valueFrom:
                 fieldRef:
@@ -37,6 +41,9 @@ spec:
                   fieldPath: metadata.namespace
             - name: WORKSPACE_HOME_DIR
               value: "/home/user"
+          volumeMounts:
+            - name: config-sync-storage
+              mountPath: /data/config-sync-storage
           livenessProbe:
             httpGet:
               path: /healthz
@@ -56,3 +63,7 @@ spec:
             limits:
               memory: "256Mi"
               cpu: "500m"
+      volumes:
+        - name: config-sync-storage
+          persistentVolumeClaim:
+            claimName: config-sync-storage
