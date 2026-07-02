@@ -26,6 +26,7 @@ The server listens on port **8089** (configurable via `CONFIG_SYNC_PORT`) and ex
 | `POD_NAMESPACE` | auto-detected | Kubernetes namespace for pod discovery (auto-detected from `/var/run/secrets/kubernetes.io/serviceaccount/namespace`) |
 | `TARGET_WORKSPACE` | none | Optional default workspace name for remote mode |
 | `WORKSPACE_HOME_DIR` | `~` | Home directory path inside workspace pods |
+| `CONFIG_SYNC_AUTH_ENABLED` | `true` | Enable K8s bearer token authentication |
 
 ## MCP tools
 
@@ -124,6 +125,28 @@ docker run -p 8089:8089 config-sync-mcp
 
 Base image: `registry.access.redhat.com/ubi10/nodejs-24-minimal`
 
+## Authentication
+
+When deployed on-cluster, the server validates `Authorization: Bearer <token>` headers via the K8s TokenReview API. Auth is enabled by default (`CONFIG_SYNC_AUTH_ENABLED=true`).
+
+```bash
+# Get a token
+TOKEN=$(oc whoami -t)                                          # OpenShift
+TOKEN=$(kubectl create token config-sync-mcp --duration=2h)    # vanilla K8s
+
+# Claude Code — with auth header
+claude mcp add --transport http \
+  --header "Authorization: Bearer $TOKEN" \
+  config-sync http://<route-hostname>/mcp
+
+# Without auth (ClusterIP-only, auth disabled)
+claude mcp add --transport http config-sync http://config-sync-mcp:8089/mcp
+```
+
+- `GET /healthz` bypasses auth — K8s liveness/readiness probes work without tokens
+- If the K8s API is unreachable, auth returns 503 (fail closed)
+- To disable auth: set `CONFIG_SYNC_AUTH_ENABLED=false` in the Deployment
+
 ## Cluster deployment
 
 Deploy the centralized config-sync-mcp server to a Kubernetes/OpenShift namespace where DevWorkspaces run.
@@ -136,16 +159,24 @@ Deploy the centralized config-sync-mcp server to a Kubernetes/OpenShift namespac
 ### Apply manifests
 
 ```bash
-oc project <namespace>
-oc apply -f deploy/
+# Base deployment (ClusterIP only, auth enabled)
+kubectl apply -k deploy/base/ -n <namespace>
+
+# With OpenShift Route (external access via HTTPS)
+kubectl apply -k deploy/overlays/openshift/ -n <namespace>
+
+# With vanilla K8s Ingress (external access)
+kubectl apply -k deploy/overlays/ingress/ -n <namespace>
 ```
 
 This creates:
 - **ServiceAccount** `config-sync-mcp` — identity for the server pod
 - **Role** — permissions to list pods, exec into workspace pods, and watch DevWorkspaces
 - **RoleBinding** — binds the role to the service account
+- **ClusterRole** — permissions for `tokenreviews` and `subjectaccessreviews` (auth)
 - **Deployment** — the server running in remote mode (`FILE_ACCESS_MODE=remote`)
 - **Service** — exposes the MCP endpoint at `config-sync-mcp:8089`
+- **PersistentVolumeClaim** — storage for config snapshots
 
 ### Verify
 
@@ -153,13 +184,15 @@ This creates:
 # Check pod is running
 oc get pods -l app=config-sync-mcp
 
-# Check health
-oc exec deployment/config-sync-mcp -- curl -s http://localhost:8089/healthz
+# Check health (no auth required)
+curl -s https://$(oc get route config-sync-mcp -o jsonpath='{.spec.host}')/healthz
 
-# Test MCP handshake
-oc exec deployment/config-sync-mcp -- curl -s -X POST http://localhost:8089/mcp \
+# Test with auth
+TOKEN=$(oc whoami -t)
+curl -s -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
+  -X POST "https://$(oc get route config-sync-mcp -o jsonpath='{.spec.host}')/mcp" \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}},"id":1}'
 ```
 
