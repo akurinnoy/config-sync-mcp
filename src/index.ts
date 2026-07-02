@@ -6,6 +6,7 @@ import { loadProfiles } from './profiles/loader.js';
 import { FileBackend } from './storage/file-backend.js';
 import { LocalWorkspaceResolver } from './workspace-resolver.js';
 import { startHttpServer, shutdownHttpServer } from './server.js';
+import { loadAuthConfig } from './config.js';
 import { DEFAULT_PORT } from './types.js';
 import type { WorkspaceResolver } from './workspace-resolver.js';
 import type { McpServerConfig } from './server.js';
@@ -57,7 +58,27 @@ async function main(): Promise<void> {
     defaultWorkspace,
   };
 
-  const server = await startHttpServer(port, config);
+  const authConfig = loadAuthConfig();
+
+  let authMiddleware: ((req: any, res: any, next: () => Promise<void>) => Promise<void>) | undefined;
+
+  if (authConfig.authEnabled) {
+    if (!authConfig.namespace) {
+      console.error('Fatal: POD_NAMESPACE environment variable is required when auth is enabled. Set POD_NAMESPACE or set CONFIG_SYNC_AUTH_ENABLED=false.');
+      process.exit(1);
+    }
+    const { rawHttpK8sAuth, createDefaultK8sClient } = await import('@che-incubator/k8s-mcp-auth');
+    authMiddleware = rawHttpK8sAuth({
+      publicPaths: [{ method: 'GET', path: '/healthz' }],
+      namespace: authConfig.namespace,
+      k8sClient: createDefaultK8sClient(),
+    });
+    console.log(`Auth enabled (namespace: ${authConfig.namespace})`);
+  } else {
+    console.log('Auth disabled');
+  }
+
+  const server = await startHttpServer(port, config, authMiddleware);
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : port;
   console.log(`config-sync-mcp listening on port ${actualPort}`);
