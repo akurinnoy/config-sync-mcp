@@ -140,6 +140,21 @@ oc project <namespace>
 oc apply -f deploy/
 ```
 
+### Connect Claude Code (external access via K8s API proxy)
+
+Access the MCP server from outside the cluster without port-forwarding. The K8s API server authenticates requests using your kubeconfig credentials:
+
+```bash
+API_SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+NAMESPACE=<your-namespace>
+
+claude mcp add --transport http \
+  --header "Authorization: Bearer $(oc whoami -t)" \
+  config-sync "$API_SERVER/api/v1/namespaces/$NAMESPACE/services/config-sync-mcp:8089/proxy/mcp"
+```
+
+No ClusterRole or Route required — the API server handles authentication and proxies to the ClusterIP service. The caller needs `services/proxy` RBAC permission in the target namespace.
+
 This creates:
 - **ServiceAccount** `config-sync-mcp` — identity for the server pod
 - **Role** — permissions to list pods, exec into workspace pods, and watch DevWorkspaces
