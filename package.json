@@ -14,7 +14,6 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@che-incubator/k8s-mcp-auth": "github:akurinnoy/k8s-mcp-auth",
     "@kubernetes/client-node": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fast-glob": "^3.3.3",

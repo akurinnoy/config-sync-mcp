@@ -200,52 +200,33 @@ function normalizeToolCallArguments(body: unknown): void {
 export async function startHttpServer(
   port: number,
   config: McpServerConfig,
-  authMiddleware?: (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    next: () => Promise<void>,
-  ) => Promise<void>,
 ): Promise<http.Server> {
   const server = http.createServer(async (req, res) => {
-    if (authMiddleware) {
-      await authMiddleware(req, res, async () => {
-        await handleRouting(req, res, config);
-      });
-    } else {
-      await handleRouting(req, res, config);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+
+    if (url.pathname === '/healthz' && req.method === 'GET') {
+      const health = await config.storage.healthCheck();
+      res.writeHead(health.healthy ? 200 : 503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(health));
+      return;
     }
+
+    if (url.pathname === '/mcp') {
+      if (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE') {
+        await handleMcpRequest(req, res, config);
+      } else {
+        res.writeHead(405).end('Method Not Allowed');
+      }
+      return;
+    }
+
+    res.writeHead(404).end('Not Found');
   });
 
   return new Promise((resolve, reject) => {
     server.listen(port, () => resolve(server));
     server.on('error', reject);
   });
-}
-
-async function handleRouting(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  config: McpServerConfig,
-): Promise<void> {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-
-  if (url.pathname === '/healthz' && req.method === 'GET') {
-    const health = await config.storage.healthCheck();
-    res.writeHead(health.healthy ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(health));
-    return;
-  }
-
-  if (url.pathname === '/mcp') {
-    if (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE') {
-      await handleMcpRequest(req, res, config);
-    } else {
-      res.writeHead(405).end('Method Not Allowed');
-    }
-    return;
-  }
-
-  res.writeHead(404).end('Not Found');
 }
 
 async function handleMcpRequest(
